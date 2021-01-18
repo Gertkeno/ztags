@@ -1,5 +1,5 @@
 # ztags
-ctags implementation for Zig written in Zig
+ctags implementation for Zig written in Zig 0.7.1
 
 ## Vim Tagbar Configuration
 

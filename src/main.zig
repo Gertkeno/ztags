@@ -1,29 +1,28 @@
 const std = @import("std");
 
 fn tagKind(tree: *std.zig.ast.Tree, node: *std.zig.ast.Node) u8 {
-    return switch (node.id) {
-        std.zig.ast.Node.Id.FnProto => 'f',
-        std.zig.ast.Node.Id.VarDecl => blk: {
+    const NTag = std.zig.ast.Node.Tag;
+    return switch (node.tag) {
+        NTag.FnProto => 'f',
+        NTag.VarDecl => blk: {
             const var_decl_node = node.cast(std.zig.ast.Node.VarDecl).?;
-            if (var_decl_node.init_node) |init_node| {
-                if (init_node.id == std.zig.ast.Node.Id.ContainerDecl) {
+            if (var_decl_node.getInitNode()) |init_node| {
+                if (init_node.tag == NTag.ContainerDecl) {
                     const container_node = init_node.cast(std.zig.ast.Node.ContainerDecl).?;
-                    break :blk switch (tree.tokens.at(container_node.kind_token).id) {
+                    break :blk switch (tree.token_ids[container_node.kind_token]) {
                         std.zig.Token.Id.Keyword_struct => 's',
                         std.zig.Token.Id.Keyword_union => 'u',
                         std.zig.Token.Id.Keyword_enum => 'e',
-                        else => u8(0),
+                        else => @as(u8, 0),
                     };
-                } else if (init_node.id == std.zig.ast.Node.Id.ErrorType or
-                    init_node.id == std.zig.ast.Node.Id.ErrorSetDecl)
-                {
+                } else if (init_node.tag == NTag.ErrorType or init_node.tag == NTag.ErrorSetDecl) {
                     return 'r';
                 }
             }
             break :blk 'v';
         },
-        std.zig.ast.Node.Id.StructField, std.zig.ast.Node.Id.UnionTag, std.zig.ast.Node.Id.EnumTag => 'm',
-        else => u8(0),
+        NTag.ContainerField => 'm',
+        else => @as(u8, 0),
     };
 }
 
@@ -63,31 +62,32 @@ const ParseArgs = struct {
 
 fn findTags(args: *const ParseArgs) ErrorSet!void {
     var token_index: ?std.zig.ast.TokenIndex = null;
+    const NTag = std.zig.ast.Node.Tag;
     switch (args.node.tag) {
-        std.zig.ast.Node.StructField => {
-            const struct_field = args.node.castTag(std.zig.ast.Node.StructField).?;
-            token_index = struct_field.name_token;
+        NTag.ContainerField => {
+            const container_field = args.node.castTag(NTag.ContainerField).?;
+            token_index = container_field.name_token;
         },
-        std.zig.ast.Node.UnionTag => {
-            const union_tag = args.node.castTag(std.zig.ast.Node.UnionTag).?;
-            token_index = union_tag.name_token;
-        },
-        std.zig.ast.Node.EnumTag => {
-            const enum_tag = args.node.castTag(std.zig.ast.Node.EnumTag).?;
-            token_index = enum_tag.name_token;
-        },
-        std.zig.ast.Node.FnProto => {
-            const fn_node = args.node.castTag(std.zig.ast.Node.FnProto).?;
-            if (fn_node.name_token) |name_index| {
+        //std.zig.ast.Node.UnionTag => {
+        //const union_tag = args.node.castTag(std.zig.ast.Node.UnionTag).?;
+        //token_index = union_tag.name_token;
+        //},
+        //std.zig.ast.Node.EnumTag => {
+        //const enum_tag = args.node.castTag(std.zig.ast.Node.EnumTag).?;
+        //token_index = enum_tag.name_token;
+        //},
+        NTag.FnProto => {
+            const fn_node = args.node.castTag(NTag.FnProto).?;
+            if (fn_node.getNameToken()) |name_index| {
                 token_index = name_index;
             }
         },
-        std.zig.ast.Node.VarDecl => {
-            const var_node = args.node.castTag(std.zig.ast.Node.VarDecl).?;
+        NTag.VarDecl => {
+            const var_node = args.node.castTag(NTag.VarDecl).?;
             token_index = var_node.name_token;
 
-            if (var_node.init_node) |init_node| {
-                if (init_node.id == std.zig.ast.Node.Id.ContainerDecl) {
+            if (var_node.getInitNode()) |init_node| {
+                if (init_node.tag == NTag.ContainerDecl) {
                     const container_node = init_node.cast(std.zig.ast.Node.ContainerDecl).?;
                     const container_kind = args.tree.tokenSlice(container_node.kind_token);
                     const container_name = args.tree.tokenSlice(token_index.?);
@@ -102,12 +102,11 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
                         sub_scope = try std.mem.dupe(args.allocator, u8, container_name);
                     }
                     defer args.allocator.free(sub_scope);
-                    var it = container_node.fields_and_decls.iterator(0);
-                    while (it.next()) |child| {
+                    for (container_node.fieldsAndDecls()) |child| {
                         const child_args = ParseArgs{
                             .allocator = args.allocator,
                             .tree = args.tree,
-                            .node = child.*,
+                            .node = child,
                             .path = args.path,
                             .scope_field_name = container_kind,
                             .scope = sub_scope,
@@ -115,9 +114,7 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
                         };
                         try findTags(&child_args);
                     }
-                } else if (init_node.id == std.zig.ast.Node.Id.ErrorSetDecl or
-                    init_node.id == std.zig.ast.Node.Id.ErrorType)
-                {}
+                } //else if (init_node.tag == NTag.ErrorSetDecl or init_node.tag == NTag.ErrorType) {}
             }
         },
         else => {},
@@ -133,11 +130,17 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
     const escaped_line = try escapeString(args.allocator, line);
     defer args.allocator.free(escaped_line);
 
-    args.tags_file_stream.print("{}\t{}\t/^{}$/;\"\t{c}", name, args.path, escaped_line, tagKind(args.tree, args.node)) catch return ErrorSet.WriteError;
+    args.tags_file_stream.print("{}\t{}\t/^{}$/;\"\t{c}", .{
+        name,
+        args.path,
+        escaped_line,
+        tagKind(args.tree, args.node),
+    }) catch return ErrorSet.WriteError;
+
     if (args.scope.len > 0) {
-        args.tags_file_stream.print("\t{}:{}", args.scope_field_name, args.scope) catch return ErrorSet.WriteError;
+        args.tags_file_stream.print("\t{}:{}", .{ args.scope_field_name, args.scope }) catch return ErrorSet.WriteError;
     }
-    args.tags_file_stream.print("\n") catch return ErrorSet.WriteError;
+    args.tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
 }
 
 pub fn main() !void {
