@@ -58,32 +58,32 @@ const ParseArgs = struct {
     path: []const u8,
     scope_field_name: []const u8,
     scope: []const u8,
-    tags_file_stream: *std.os.File.OutStream.Stream,
+    tags_file_stream: *std.fs.File.Writer,
 };
 
 fn findTags(args: *const ParseArgs) ErrorSet!void {
     var token_index: ?std.zig.ast.TokenIndex = null;
-    switch (args.node.id) {
-        std.zig.ast.Node.Id.StructField => {
-            const struct_field = args.node.cast(std.zig.ast.Node.StructField).?;
+    switch (args.node.tag) {
+        std.zig.ast.Node.StructField => {
+            const struct_field = args.node.castTag(std.zig.ast.Node.StructField).?;
             token_index = struct_field.name_token;
         },
-        std.zig.ast.Node.Id.UnionTag => {
-            const union_tag = args.node.cast(std.zig.ast.Node.UnionTag).?;
+        std.zig.ast.Node.UnionTag => {
+            const union_tag = args.node.castTag(std.zig.ast.Node.UnionTag).?;
             token_index = union_tag.name_token;
         },
-        std.zig.ast.Node.Id.EnumTag => {
-            const enum_tag = args.node.cast(std.zig.ast.Node.EnumTag).?;
+        std.zig.ast.Node.EnumTag => {
+            const enum_tag = args.node.castTag(std.zig.ast.Node.EnumTag).?;
             token_index = enum_tag.name_token;
         },
-        std.zig.ast.Node.Id.FnProto => {
-            const fn_node = args.node.cast(std.zig.ast.Node.FnProto).?;
+        std.zig.ast.Node.FnProto => {
+            const fn_node = args.node.castTag(std.zig.ast.Node.FnProto).?;
             if (fn_node.name_token) |name_index| {
                 token_index = name_index;
             }
         },
-        std.zig.ast.Node.Id.VarDecl => blk: {
-            const var_node = args.node.cast(std.zig.ast.Node.VarDecl).?;
+        std.zig.ast.Node.VarDecl => {
+            const var_node = args.node.castTag(std.zig.ast.Node.VarDecl).?;
             token_index = var_node.name_token;
 
             if (var_node.init_node) |init_node| {
@@ -141,31 +141,28 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
 }
 
 pub fn main() !void {
-    var direct_allocator = std.heap.DirectAllocator.init();
-    defer direct_allocator.deinit();
-    const allocator = &direct_allocator.allocator;
-    var args_it = std.os.args();
+    const allocator = std.heap.page_allocator;
+    var args_it = std.process.args();
     _ = args_it.skip(); // Discard program name
     const path = try args_it.next(allocator).?;
     defer allocator.free(path);
-    const source = try std.io.readFileAlloc(allocator, path);
+    const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
     defer allocator.free(source);
     var tree = try std.zig.parse(allocator, source);
     defer tree.deinit();
 
-    var stdout_file = try std.io.getStdOut();
-    const stdout = &stdout_file.outStream().stream;
+    var stdout_file = std.io.getStdOut().writer();
     const node = &tree.root_node.base;
     var child_i: usize = 0;
     while (node.iterate(child_i)) |child| : (child_i += 1) {
         const child_args = ParseArgs{
             .allocator = allocator,
-            .tree = &tree,
+            .tree = tree,
             .node = child,
             .path = path,
             .scope_field_name = "",
             .scope = "",
-            .tags_file_stream = stdout,
+            .tags_file_stream = &stdout_file,
         };
         try findTags(&child_args);
     }
