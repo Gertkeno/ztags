@@ -147,26 +147,29 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     var args_it = std.process.args();
     _ = args_it.skip(); // Discard program name
-    const path = try args_it.next(allocator).?;
-    defer allocator.free(path);
-    const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
-    defer allocator.free(source);
-    var tree = try std.zig.parse(allocator, source);
-    defer tree.deinit();
+    while (args_it.next(allocator)) |try_path| {
+        const path = try try_path;
 
-    var stdout_file = std.io.getStdOut().writer();
-    const node = &tree.root_node.base;
-    var child_i: usize = 0;
-    while (node.iterate(child_i)) |child| : (child_i += 1) {
-        const child_args = ParseArgs{
-            .allocator = allocator,
-            .tree = tree,
-            .node = child,
-            .path = path,
-            .scope_field_name = "",
-            .scope = "",
-            .tags_file_stream = &stdout_file,
-        };
-        try findTags(&child_args);
+        defer allocator.free(path);
+        const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
+        defer allocator.free(source);
+        var tree = try std.zig.parse(allocator, source);
+        defer tree.deinit();
+
+        var stdout_file = std.io.getStdOut().writer();
+        const node = &tree.root_node.base;
+        var child_i: usize = 0;
+        while (node.iterate(child_i)) |child| : (child_i += 1) {
+            const child_args = ParseArgs{
+                .allocator = allocator,
+                .tree = tree,
+                .node = child,
+                .path = path,
+                .scope_field_name = "",
+                .scope = "",
+                .tags_file_stream = &stdout_file,
+            };
+            try findTags(&child_args);
+        }
     }
 }
