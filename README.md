@@ -5,7 +5,7 @@ ctags implementation for Zig written in Zig 0.7.1
 
 Add this to your `.vimrc` (fixing `ctagsbin` accordingly):
 
-```
+```vimscript
 let g:tagbar_type_zig = {
 	\ 'ctagstype' : 'zig',
 	\ 'kinds'     : [
