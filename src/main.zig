@@ -4,24 +4,33 @@ fn tagKind(tree: *std.zig.ast.Tree, node: *std.zig.ast.Node) u8 {
     const NTag = std.zig.ast.Node.Tag;
     return switch (node.tag) {
         NTag.FnProto => 'f',
-        NTag.VarDecl => blk: {
+        NTag.VarDecl => {
             const var_decl_node = node.cast(std.zig.ast.Node.VarDecl).?;
             if (var_decl_node.getInitNode()) |init_node| {
                 if (init_node.tag == NTag.ContainerDecl) {
                     const container_node = init_node.cast(std.zig.ast.Node.ContainerDecl).?;
-                    break :blk switch (tree.token_ids[container_node.kind_token]) {
+                    return switch (tree.token_ids[container_node.kind_token]) {
                         std.zig.Token.Id.Keyword_struct => 's',
                         std.zig.Token.Id.Keyword_union => 'u',
-                        std.zig.Token.Id.Keyword_enum => 'e',
+                        std.zig.Token.Id.Keyword_enum => 'g',
                         else => @as(u8, 0),
                     };
                 } else if (init_node.tag == NTag.ErrorType or init_node.tag == NTag.ErrorSetDecl) {
                     return 'r';
                 }
             }
-            break :blk 'v';
+            return 'v';
         },
-        NTag.ContainerField => 'm',
+        NTag.ContainerField => {
+            const member_decl_node = node.castTag(NTag.ContainerField).?;
+            // hacky but enumerated types do not allow for type expressions while union/structs require
+            // this just happens to be an easy check if the container field is a enum or otherwise (assuming valid code).
+            if (member_decl_node.type_expr == null) {
+                return 'e';
+            } else {
+                return 'm';
+            }
+        },
         else => @as(u8, 0),
     };
 }
@@ -68,14 +77,6 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
             const container_field = args.node.castTag(NTag.ContainerField).?;
             token_index = container_field.name_token;
         },
-        //std.zig.ast.Node.UnionTag => {
-        //const union_tag = args.node.castTag(std.zig.ast.Node.UnionTag).?;
-        //token_index = union_tag.name_token;
-        //},
-        //std.zig.ast.Node.EnumTag => {
-        //const enum_tag = args.node.castTag(std.zig.ast.Node.EnumTag).?;
-        //token_index = enum_tag.name_token;
-        //},
         NTag.FnProto => {
             const fn_node = args.node.castTag(NTag.FnProto).?;
             if (fn_node.getNameToken()) |name_index| {
@@ -130,7 +131,7 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
     const escaped_line = try escapeString(args.allocator, line);
     defer args.allocator.free(escaped_line);
 
-    args.tags_file_stream.print("{}\t{}\t/^{}$/;\"\t{c}", .{
+    args.tags_file_stream.print("{s}\t{s}\t/^{s}$/;\"\t{c}", .{
         name,
         args.path,
         escaped_line,
@@ -138,13 +139,16 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
     }) catch return ErrorSet.WriteError;
 
     if (args.scope.len > 0) {
-        args.tags_file_stream.print("\t{}:{}", .{ args.scope_field_name, args.scope }) catch return ErrorSet.WriteError;
+        args.tags_file_stream.print("\t{s}:{s}", .{ args.scope_field_name, args.scope }) catch return ErrorSet.WriteError;
     }
     args.tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
 }
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = &gpa.allocator;
     var args_it = std.process.args();
     _ = args_it.skip(); // Discard program name
     while (args_it.next(allocator)) |try_path| {
