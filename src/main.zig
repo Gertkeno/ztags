@@ -150,11 +150,15 @@ pub fn main() !void {
 
     const allocator = &gpa.allocator;
     var args_it = std.process.args();
-    _ = args_it.skip(); // Discard program name
+
+    // storing program name for bash sort helper script
+    const program_name = try args_it.next(allocator) orelse unreachable;
+    defer allocator.free(program_name);
 
     var stdout = std.io.getStdOut().writer();
 
-    while (args_it.next(allocator)) |try_path| {
+    var parsed_files: usize = 0;
+    while (args_it.next(allocator)) |try_path| : (parsed_files += 1) {
         const path = try try_path;
         defer allocator.free(path);
 
@@ -178,5 +182,11 @@ pub fn main() !void {
             };
             try findTags(&child_args);
         }
+    }
+
+    if (parsed_files == 0) {
+        std.debug.warn("Usage: ztags FILE(s)\n", .{});
+        std.debug.warn("To sort and speed up large tag files you may want to use the following pipe-able bash script to generate a tags file\n", .{});
+        try stdout.print(@embedFile("helper.sh"), .{program_name});
     }
 }
