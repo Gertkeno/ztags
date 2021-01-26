@@ -115,7 +115,7 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
                         };
                         try findTags(&child_args);
                     }
-                } //else if (init_node.tag == NTag.ErrorSetDecl or init_node.tag == NTag.ErrorType) {}
+                }
             }
         },
         else => {},
@@ -151,16 +151,19 @@ pub fn main() !void {
     const allocator = &gpa.allocator;
     var args_it = std.process.args();
     _ = args_it.skip(); // Discard program name
+
+    var stdout = std.io.getStdOut().writer();
+
     while (args_it.next(allocator)) |try_path| {
         const path = try try_path;
-
         defer allocator.free(path);
+
         const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
         defer allocator.free(source);
+
         var tree = try std.zig.parse(allocator, source);
         defer tree.deinit();
 
-        var stdout_file = std.io.getStdOut().writer();
         const node = &tree.root_node.base;
         var child_i: usize = 0;
         while (node.iterate(child_i)) |child| : (child_i += 1) {
@@ -171,7 +174,7 @@ pub fn main() !void {
                 .path = path,
                 .scope_field_name = "",
                 .scope = "",
-                .tags_file_stream = &stdout_file,
+                .tags_file_stream = &stdout,
             };
             try findTags(&child_args);
         }
