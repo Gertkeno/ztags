@@ -59,61 +59,50 @@ const ErrorSet = error{
     WriteError,
 };
 
-const ParseArgs = struct {
+fn findTags(
     allocator: *std.mem.Allocator,
     tree: *std.zig.ast.Tree,
     node: *std.zig.ast.Node,
     path: []const u8,
     scope_field_name: []const u8,
     scope: []const u8,
-    tags_file_stream: *std.fs.File.Writer,
-};
-
-fn findTags(args: *const ParseArgs) ErrorSet!void {
+    tags_file_stream: anytype,
+) ErrorSet!void {
     var token_index: ?std.zig.ast.TokenIndex = null;
     const NTag = std.zig.ast.Node.Tag;
-    switch (args.node.tag) {
+    switch (node.tag) {
         NTag.ContainerField => {
-            const container_field = args.node.castTag(NTag.ContainerField).?;
+            const container_field = node.castTag(NTag.ContainerField).?;
             token_index = container_field.name_token;
         },
         NTag.FnProto => {
-            const fn_node = args.node.castTag(NTag.FnProto).?;
+            const fn_node = node.castTag(NTag.FnProto).?;
             if (fn_node.getNameToken()) |name_index| {
                 token_index = name_index;
             }
         },
         NTag.VarDecl => {
-            const var_node = args.node.castTag(NTag.VarDecl).?;
+            const var_node = node.castTag(NTag.VarDecl).?;
             token_index = var_node.name_token;
 
             if (var_node.getInitNode()) |init_node| {
                 if (init_node.tag == NTag.ContainerDecl) {
                     const container_node = init_node.cast(std.zig.ast.Node.ContainerDecl).?;
-                    const container_kind = args.tree.tokenSlice(container_node.kind_token);
-                    const container_name = args.tree.tokenSlice(token_index.?);
+                    const container_kind = tree.tokenSlice(container_node.kind_token);
+                    const container_name = tree.tokenSlice(token_index.?);
                     const delim = ".";
                     var sub_scope: []u8 = undefined;
-                    if (args.scope.len > 0) {
-                        sub_scope = try args.allocator.alloc(u8, args.scope.len + delim.len + container_name.len);
-                        std.mem.copy(u8, sub_scope[0..args.scope.len], args.scope);
-                        std.mem.copy(u8, sub_scope[args.scope.len .. args.scope.len + delim.len], delim);
-                        std.mem.copy(u8, sub_scope[args.scope.len + delim.len ..], container_name);
+                    if (scope.len > 0) {
+                        sub_scope = try allocator.alloc(u8, scope.len + delim.len + container_name.len);
+                        std.mem.copy(u8, sub_scope[0..scope.len], scope);
+                        std.mem.copy(u8, sub_scope[scope.len .. scope.len + delim.len], delim);
+                        std.mem.copy(u8, sub_scope[scope.len + delim.len ..], container_name);
                     } else {
-                        sub_scope = try std.mem.dupe(args.allocator, u8, container_name);
+                        sub_scope = try std.mem.dupe(allocator, u8, container_name);
                     }
-                    defer args.allocator.free(sub_scope);
+                    defer allocator.free(sub_scope);
                     for (container_node.fieldsAndDecls()) |child| {
-                        const child_args = ParseArgs{
-                            .allocator = args.allocator,
-                            .tree = args.tree,
-                            .node = child,
-                            .path = args.path,
-                            .scope_field_name = container_kind,
-                            .scope = sub_scope,
-                            .tags_file_stream = args.tags_file_stream,
-                        };
-                        try findTags(&child_args);
+                        try findTags(allocator, tree, child, path, container_kind, sub_scope, tags_file_stream);
                     }
                 }
             }
@@ -125,23 +114,23 @@ fn findTags(args: *const ParseArgs) ErrorSet!void {
         return;
     }
 
-    const name = args.tree.tokenSlice(token_index.?);
-    const location = args.tree.tokenLocation(0, token_index.?);
-    const line = args.tree.source[location.line_start..location.line_end];
-    const escaped_line = try escapeString(args.allocator, line);
-    defer args.allocator.free(escaped_line);
+    const name = tree.tokenSlice(token_index.?);
+    const location = tree.tokenLocation(0, token_index.?);
+    const line = tree.source[location.line_start..location.line_end];
+    const escaped_line = try escapeString(allocator, line);
+    defer allocator.free(escaped_line);
 
-    args.tags_file_stream.print("{s}\t{s}\t/^{s}$/;\"\t{c}", .{
+    tags_file_stream.print("{s}\t{s}\t/^{s}$/;\"\t{c}", .{
         name,
-        args.path,
+        path,
         escaped_line,
-        tagKind(args.tree, args.node),
+        tagKind(tree, node),
     }) catch return ErrorSet.WriteError;
 
-    if (args.scope.len > 0) {
-        args.tags_file_stream.print("\t{s}:{s}", .{ args.scope_field_name, args.scope }) catch return ErrorSet.WriteError;
+    if (scope.len > 0) {
+        tags_file_stream.print("\t{s}:{s}", .{ scope_field_name, scope }) catch return ErrorSet.WriteError;
     }
-    args.tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
+    tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
 }
 
 pub fn main() !void {
@@ -158,11 +147,25 @@ pub fn main() !void {
     var stdout = std.io.getStdOut().writer();
 
     var parsed_files: usize = 0;
-    while (args_it.next(allocator)) |try_path| : (parsed_files += 1) {
+    while (args_it.next(allocator)) |try_path| {
         const path = try try_path;
         defer allocator.free(path);
 
-        const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
+        const source = std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize)) catch |err| {
+            switch (err) {
+                error.IsDir => {
+                    std.debug.warn("Input '{s}' is a directory, skipping...\n", .{path});
+                    continue;
+                },
+                error.FileNotFound => {
+                    std.debug.warn("Input '{s}' not found, skipping...\n", .{path});
+                    continue;
+                },
+                else => {
+                    return err;
+                },
+            }
+        };
         defer allocator.free(source);
 
         var tree = try std.zig.parse(allocator, source);
@@ -171,22 +174,14 @@ pub fn main() !void {
         const node = &tree.root_node.base;
         var child_i: usize = 0;
         while (node.iterate(child_i)) |child| : (child_i += 1) {
-            const child_args = ParseArgs{
-                .allocator = allocator,
-                .tree = tree,
-                .node = child,
-                .path = path,
-                .scope_field_name = "",
-                .scope = "",
-                .tags_file_stream = &stdout,
-            };
-            try findTags(&child_args);
+            try findTags(allocator, tree, child, path, "", "", stdout);
         }
+        parsed_files += 1;
     }
 
     if (parsed_files == 0) {
         std.debug.warn("Usage: ztags FILE(s)\n", .{});
-        std.debug.warn("To sort and speed up large tag files you may want to use the following pipe-able bash script to generate a tags file\n", .{});
+        std.debug.warn("\nTo sort and speed up large tag files you may want to use the following pipe-able bash script to generate a tags file\n", .{});
         try stdout.print(@embedFile("helper.sh"), .{program_name});
     }
 }
