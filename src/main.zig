@@ -133,7 +133,7 @@ fn findTags(
     tags_file_stream.print("\n", .{}) catch return ErrorSet.WriteError;
 }
 
-pub fn main() !void {
+pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -183,5 +183,7 @@ pub fn main() !void {
         std.debug.warn("Usage: ztags FILE(s)\n", .{});
         std.debug.warn("\nTo sort and speed up large tag files you may want to use the following pipe-able bash script to generate a tags file\n", .{});
         try stdout.print(@embedFile("helper.sh"), .{program_name});
+        return 1;
     }
+    return 0;
 }
